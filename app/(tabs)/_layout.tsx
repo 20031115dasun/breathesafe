@@ -19,7 +19,23 @@ const _Layout = () => {
         <Tabs.Screen
             name="device"
             options={{
-                title: 'Home',
+                title: 'Device',
+                headerShown: false,
+            }}
+        />
+
+        <Tabs.Screen
+            name="dashboard"
+            options={{
+                title: 'Dashboard',
+                headerShown: false,
+            }}
+        />
+
+        <Tabs.Screen
+            name="profile"
+            options={{
+                title: 'Profile',
                 headerShown: false,
             }}
         />
