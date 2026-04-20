@@ -1,0 +1,9 @@
+{
+    "postgres":{
+        "username":"postgres",
+        "password":"chethaka2003",
+        "database": "breatheSafe",
+        "port":"5432",
+        "tableName":"sensorreadings"
+    }
+}
