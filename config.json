@@ -1,0 +1,10 @@
+{
+    "postgres":{
+        "username":"postgres",
+        "password":"chethaka2003",
+        "database": "breatheSafe",
+        "port":"5432",
+        "sensorTableName":"sensorreadings",
+        "predTableName":"model_predictions"
+    }
+}
