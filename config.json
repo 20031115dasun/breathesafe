@@ -4,6 +4,7 @@
         "password":"chethaka2003",
         "database": "breatheSafe",
         "port":"5432",
-        "tableName":"sensorreadings"
+        "sensorTableName":"sensorreadings",
+        "predTableName":"model_predictions"
     }
 }
