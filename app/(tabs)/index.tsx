@@ -1,6 +1,6 @@
-import React from "react";
+import React, {useEffect} from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ScrollView, Text, View } from "react-native";
+import {ActivityIndicator, ScrollView, Text, View} from "react-native";
 import StatCard from "@/components/StatCard";
 import AdviceCard from "@/components/AdviceCard";
 import ActivityCard from "@/components/ActivityCard";
@@ -14,14 +14,82 @@ import {
     Footprints,
     Dumbbell,
     Trees,
-    Bike,
+    Bike, MoveRight, Clock,
 } from "lucide-react-native";
+import {getPredictionData, getSensorData} from "@/services/iot-api";
+import {PredictionData, SensorData} from "@/types/api-types";
 
 export default function Index() {
-    const aqi = 78;
-    const pm25 = 28;
-    const status = "Moderate";
-    const updatedTime = "2:30 PM";
+    const [sensorData, setSensorData] = React.useState<SensorData | null>(null)
+    const [predData, setPredData] = React.useState<PredictionData | null>(null)
+
+    const [loading, setLoading] = React.useState(true)
+
+    useEffect(() => {
+        const loadData = async () => {
+            try {
+                const sensorResponse = await getSensorData();
+                const predResponse = await getPredictionData();
+
+                // Access the .data property from your FastAPI response
+                if (sensorResponse && sensorResponse.status === "Success") {
+                    setSensorData(sensorResponse.data);
+                    setLoading(false);
+                }
+
+                if (predResponse && predResponse.status === "Success") {
+                    setPredData(predResponse.data);
+                }
+            } catch (error) {
+                console.error("Error fetching sensor data:", error);
+            } finally {
+                // We only set loading to false after the FIRST load,
+                // so the screen doesn't constantly flash a loading spinner.
+            }
+        };
+
+        // 1. Fetch data immediately when the screen loads
+        loadData();
+
+        // 2. Set up a timer to run `loadData` again every 5000 milliseconds (5 seconds)
+        const intervalId = setInterval(() => {
+            loadData();
+        }, 5000);
+
+        // 3. Cleanup function: This is very important!
+        // It destroys the timer if the user navigates away from the screen, preventing memory leaks.
+        return () => clearInterval(intervalId);
+    }, []);
+
+    if (loading) {
+        return (
+            <SafeAreaView className="flex-1 bg-brand-soft items-center justify-center">
+                <ActivityIndicator size="large" color="#31CDB6" />
+                <Text className="mt-4 text-brand-dark">Loading latest readings...</Text>
+            </SafeAreaView>
+        );
+    }
+
+    // 4. Map the fetched data to your variables, providing safe fallbacks (??)
+    // Make sure the property names (like .aqi, .pm25, .temperature) match your database columns!
+    const aqi = sensorData?.saqi ?? 0;
+    const pm25 = sensorData?.pm2_5 ?? "--";
+    const temperature = sensorData?.temp ?? "--";
+    const humidity = sensorData?.humidity ?? "--";
+    const pm10 = sensorData?.pm10 ?? "--";
+    const pm1 = sensorData?.pm1 ?? "--";
+
+    const trend = predData?.trend ?? "--";
+    const pred_saqi = predData?.pred_saqi ?? 0;
+    const pred_class = predData?.pred_class ?? "--";
+    const current_class = predData?.current_class ?? "--";
+
+
+    // You can format this dynamically later based on sensorData.dateTime
+    const updatedTime = "Just now";
+
+    // You can write a helper function later to determine "Good", "Moderate", "Unhealthy" dynamically based on the 'aqi' number.
+    const status = aqi > 50 ? "Moderate" : "Good"
 
     return (
         <SafeAreaView className="flex-1 bg-brand-soft">
@@ -75,71 +143,109 @@ export default function Index() {
                     </View>
                 </View>
 
+                <View className="mt-6 bg-white rounded-[25px] p-5 shadow-sm border border-brand-soft">
+                    <View className="flex-row items-center justify-between mb-4">
+                        <View className="flex-row items-center">
+                            <Clock size={22} color="#0F2D57" />
+                            <Text className="text-brand-dark text-xl font-bold ml-2">10-Min Forecast</Text>
+                        </View>
+                        <View className="bg-brand-soft px-3 py-1 rounded-lg">
+                            <Text className="text-brand-primary font-bold text-xs">AI PREDICTION</Text>
+                        </View>
+                    </View>
+
+                    <View className="flex-row items-center justify-around bg-brand-soft/30 rounded-2xl p-4">
+                        <View className="items-center">
+                            <Text className="text-gray-500 text-xs font-bold uppercase">Current</Text>
+                            <Text className="text-brand-dark text-lg font-extrabold">{current_class}</Text>
+                        </View>
+
+                        <MoveRight size={24} color="#31CDB6" />
+
+                        <View className="items-center">
+                            <Text className="text-gray-500 text-xs font-bold uppercase">In 10 Mins</Text>
+                            <Text className="text-brand-primary text-2xl font-black">{Math.round(pred_saqi)}</Text>
+                            <Text className="text-brand-primary font-bold">{pred_class}</Text>
+                        </View>
+                    </View>
+
+                    <Text className="text-gray-500 text-xs italic mt-3 text-center">
+                        The air quality is expected to be {pred_class.toLowerCase()} in the next 10 minutes.
+                    </Text>
+                </View>
+
+                {/* 3. Small Stat Cards */}
+                <View className="flex-row justify-between mt-7">
+                    <StatCard
+                        title="Prediction"
+                        value={Math.round(pred_saqi).toString()}
+                        subtitle="Next 10m"
+                        bgClass="bg-brand-accent"
+                        icon={<Activity size={34} color="white" />}
+                    />
+                    <View className="w-4" />
+                    <StatCard
+                        title="Trend"
+                        value={trend === "Increasing" ? "Up" : "Down"}
+                        subtitle={trend}
+                        bgClass={trend === "Increasing" ? "bg-orange-400" : "bg-emerald-400"}
+                        icon={<ShieldAlert size={34} color="white" />}
+                    />
+                </View>
+
                 {/* Small Stat Cards */}
                 <View className="flex-row justify-between mt-7 ">
-
                     <StatCard
                         title="AQI Level"
-                        value="78"
+                        value={aqi.toString()}
                         subtitle="Current AQI"
                         bgClass="bg-brand-primary"
                         icon={<Wind size={34} color="white" />}
                     />
-
                     <View className="w-4" />
-
                     <StatCard
                         title="PM2.5"
-                        value="28"
+                        value={pm25.toString()}
                         subtitle="Fine particles"
                         bgClass="bg-brand-secondary"
                         icon={<Activity size={34} color="white" />}
                     />
-
                 </View>
 
                 <View className="flex-row justify-between mt-7">
-
                     <StatCard
                         title="Temperature"
-                        value="32C"
+                        value={`${temperature}C`}
                         subtitle="Air condition"
                         bgClass="bg-brand-accent"
                         icon={<ShieldAlert size={34} color="white" />}
                     />
-
                     <View className="w-4" />
-
                     <StatCard
                         title="Humidity"
-                        value="68%"
+                        value={`${humidity}%`}
                         subtitle="Air condition"
                         bgClass="bg-brand-accent"
                         icon={<ShieldAlert size={34} color="white" />}
                     />
-
                 </View>
 
                 <View className="flex-row justify-between mt-7">
-
                     <StatCard
                         title="PM10"
-                        value="26"
+                        value={pm10.toString()}
                         subtitle="Air condition"
                         bgClass="bg-brand-secondary"
                         icon={<Wind size={34} color="white" />}
                     />
-
                     <View className="w-4" />
-
                     <StatCard
                         title="PM1.0"
-                        value="18%"
+                        value={pm1.toString()}
                         subtitle="Air condition"
                         bgClass="bg-brand-secondary"
                         icon={<Wind size={34} color="white" />}
                     />
-
                 </View>
 
                 {/* Health Advice */}
@@ -176,26 +282,22 @@ export default function Index() {
 
                 {/* Recommended Activities */}
                 <View className="mt-8 bg-brand-card rounded-[30px] p-5 shadow-md">
-
                     <View className="flex-row items-center mb-6">
                         <View className="w-12 h-12 rounded-2xl bg-brand-accent items-center justify-center">
                             <CheckCircle2 size={26} color="white" />
                         </View>
-
                         <Text className="text-brand-dark text-[28px] font-extrabold ml-4">
                             Recommended Activities
                         </Text>
                     </View>
 
                     <View className="flex-row flex-wrap justify-between">
-
                         <ActivityCard title="Outdoor Running" icon={<Activity size={24} color="white" />} />
                         <ActivityCard title="Cycling" icon={<Bike size={24} color="white" />} />
                         <ActivityCard title="Walking" icon={<Footprints size={24} color="white" />} />
                         <ActivityCard title="Indoor Exercise" icon={<Dumbbell size={24} color="white" />} />
                         <ActivityCard title="Park Activities" icon={<Trees size={24} color="white" />} />
                         <ActivityCard title="Window Ventilation" icon={<Wind size={24} color="white" />} />
-
                     </View>
                 </View>
             </ScrollView>

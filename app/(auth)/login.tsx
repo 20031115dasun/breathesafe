@@ -31,9 +31,6 @@ export default function Login() {
     }
     else if (password==="admin" && userName==="admin") {
 
-      setAlertType("success");
-      setAlertMessage("Login successful");
-
       setTimeout(() => {
         router.replace("/(tabs)/dashboard")
       },1000)
