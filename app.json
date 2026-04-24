@@ -1,17 +1,23 @@
 {
   "expo": {
+    /* Basic app identity and versioning */
     "name": "BreatheSafe",
     "slug": "BreatheSafe",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icons/logo.png",
+    
+    /* URL scheme for deep linking and theme settings */
     "scheme": "breathesafefront",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+
+    /* Platform-specific settings for iOS and Android */
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      /* Adaptive icon configuration for modern Android versions */
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/icons/logo.png",
@@ -21,11 +27,15 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
+
+    /* Web-specific bundling and static output settings */
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/icons/logo.png"
     },
+
+    /* Plugin integration for Router and Splash Screen appearance */
     "plugins": [
       "expo-router",
       [
@@ -41,6 +51,8 @@
         }
       ]
     ],
+
+    /* Experimental features for TypeScript safety and performance */
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
