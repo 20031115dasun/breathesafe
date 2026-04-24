@@ -1,0 +1,75 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 120 8% 96%;
+    --foreground: 125 45% 18%;
+    --card: 0 0% 100%;
+    --card-foreground: 125 45% 18%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 125 45% 18%;
+    --primary: 125 45% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 120 20% 88%;
+    --secondary-foreground: 125 45% 18%;
+    --muted: 120 15% 93%;
+    --muted-foreground: 125 20% 50%;
+    --accent: 120 20% 88%;
+    --accent-foreground: 125 45% 18%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 120 15% 87%;
+    --input: 120 20% 91%;
+    --ring: 125 45% 24%;
+    --radius: 1rem;
+  }
+
+  .dark {
+    --background: 125 40% 8%;
+    --foreground: 120 20% 92%;
+    --card: 125 35% 11%;
+    --card-foreground: 120 20% 92%;
+    --popover: 125 35% 11%;
+    --popover-foreground: 120 20% 92%;
+    --primary: 125 45% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 125 20% 18%;
+    --secondary-foreground: 120 15% 85%;
+    --muted: 125 20% 15%;
+    --muted-foreground: 120 10% 55%;
+    --accent: 120 20% 20%;
+    --accent-foreground: 120 20% 88%;
+    --destructive: 0 62% 35%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 125 20% 20%;
+    --input: 125 20% 18%;
+    --ring: 125 45% 24%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-inter;
+  }
+}
+
+/* Deep forest green gradient — matches the dark CTA buttons in the design */
+.gradient-teal {
+  background: linear-gradient(135deg, #2D5A27 0%, #3a7232 100%);
+}
+
+.gradient-teal-dark {
+  background: linear-gradient(160deg, #1E4620 0%, #2D5A27 50%, #1E4620 100%);
+}
+
+/* AQI dashboard cards */
+.aqi-card-gradient {
+  background: linear-gradient(135deg, #2D5A27 0%, #3a7232 60%, #2D5A27 100%);
+}
