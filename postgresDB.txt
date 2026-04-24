@@ -1,0 +1,374 @@
+-- =============================================================================
+-- BreatheSafe | CM3603 Edge AI – Group 18
+-- PostgreSQL Database Schema
+-- Tables: users, devices, sensor_readings, predictions, alerts
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- DATABASE SETUP
+-- -----------------------------------------------------------------------------
+
+-- Run this line separately in psql before executing the rest:
+-- CREATE DATABASE breathesafe;
+-- \c breathesafe
+
+-- Enable UUID generation
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+
+-- =============================================================================
+-- 1. USERS
+--    Stores both regular users and admins (role-based access).
+--    Referenced by: devices, predictions, alerts (via device → user chain)
+-- =============================================================================
+
+CREATE TABLE users (
+    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    username        VARCHAR(50)     NOT NULL UNIQUE,
+    email           VARCHAR(100)    NOT NULL UNIQUE,
+    password_hash   VARCHAR(255)    NOT NULL,                       -- bcrypt hash; never store plain text
+    role            VARCHAR(10)     NOT NULL DEFAULT 'user'
+                        CHECK (role IN ('user', 'admin')),
+    is_active       BOOLEAN         NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  users                 IS 'Application users – regular users and admins.';
+COMMENT ON COLUMN users.password_hash   IS 'bcrypt-hashed password. Never store plaintext.';
+COMMENT ON COLUMN users.role            IS 'Access level: user (default) or admin.';
+COMMENT ON COLUMN users.is_active       IS 'Soft-disable accounts without deleting historical data.';
+
+
+-- =============================================================================
+-- 2. DEVICES
+--    Each device is a Raspberry Pi 4 edge unit owned by a user.
+--    One user can own multiple devices (one per room/location).
+-- =============================================================================
+
+CREATE TABLE devices (
+    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID            NOT NULL
+                        REFERENCES users(id) ON DELETE CASCADE,
+    device_name     VARCHAR(100)    NOT NULL,                       -- friendly label, e.g. "Living Room Sensor"
+    serial_number   VARCHAR(100)    NOT NULL UNIQUE,                -- hardware MAC/ID shown in Device screen
+    location_label  VARCHAR(100),                                   -- e.g. "Bedroom", "Kitchen"
+    model           VARCHAR(50)     NOT NULL DEFAULT 'Raspberry Pi 4 Model B',
+    is_active       BOOLEAN         NOT NULL DEFAULT TRUE,
+    last_seen_at    TIMESTAMPTZ,                                    -- updated each time device syncs
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  devices               IS 'Raspberry Pi 4 edge devices registered to users.';
+COMMENT ON COLUMN devices.serial_number IS 'Unique hardware identifier (e.g. ADF546554DFD54).';
+COMMENT ON COLUMN devices.last_seen_at  IS 'Timestamp of most recent sync – used to detect offline devices.';
+
+
+-- =============================================================================
+-- 3. SENSOR_READINGS
+--    Core time-series table. Every periodic reading from the three sensors
+--    (DHT22, MH-Z19C, PMS7003) is stored here with a computed AQI value.
+--
+--    Sensor sources:
+--      DHT22    → temperature, humidity
+--      MH-Z19C  → co2
+--      PMS7003  → pm1, pm2_5, pm10          (laser particle sensor, all three sizes)
+--      Computed → aqi, aqi_category
+-- =============================================================================
+
+CREATE TABLE sensor_readings (
+    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id       UUID            NOT NULL
+                        REFERENCES devices(id) ON DELETE CASCADE,
+
+    -- Timestamp of when the reading was captured on the edge device
+    recorded_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+    -- DHT22 – Temperature & Humidity
+    temperature     NUMERIC(5, 2)   NOT NULL,                       -- °C   | typical Sri Lanka range: 24–36 °C
+    humidity        NUMERIC(5, 2)   NOT NULL,                       -- %RH  | typical Sri Lanka range: 60–90 %
+        CONSTRAINT chk_temperature  CHECK (temperature  BETWEEN -40  AND 85),
+        CONSTRAINT chk_humidity     CHECK (humidity     BETWEEN 0    AND 100),
+
+    -- MH-Z19C – CO₂
+    co2             NUMERIC(7, 2)   NOT NULL,                       -- ppm  | safe < 1000 ppm; dangerous > 5000 ppm
+        CONSTRAINT chk_co2          CHECK (co2          BETWEEN 0    AND 10000),
+
+    -- PMS7003 – Particulate Matter (all three size fractions)
+    pm1             NUMERIC(7, 2)   NOT NULL,                       -- µg/m³ PM1.0
+    pm2_5           NUMERIC(7, 2)   NOT NULL,                       -- µg/m³ PM2.5  (primary LSTM feature)
+    pm10            NUMERIC(7, 2)   NOT NULL,                       -- µg/m³ PM10
+        CONSTRAINT chk_pm1          CHECK (pm1   >= 0),
+        CONSTRAINT chk_pm2_5        CHECK (pm2_5 >= 0),
+        CONSTRAINT chk_pm10         CHECK (pm10  >= 0),
+
+    -- Computed Air Quality Index (0–500 scale; calculated from PM2.5 + CO₂)
+    aqi             SMALLINT,                                       -- 0–500
+    aqi_category    VARCHAR(20)
+                        CHECK (aqi_category IN (
+                            'Good',             -- AQI   0–50
+                            'Moderate',         -- AQI  51–100
+                            'Unhealthy',        -- AQI 101–150  (Sensitive Groups)
+                            'Very Unhealthy',   -- AQI 151–200
+                            'Hazardous'         -- AQI 201–500
+                        )),
+
+    -- Cloud synchronisation tracking (FR-15, FR-16, FR-17)
+    is_synced       BOOLEAN         NOT NULL DEFAULT FALSE,
+    synced_at       TIMESTAMPTZ,
+
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  sensor_readings           IS 'Periodic sensor readings from DHT22, MH-Z19C, and PMS7003.';
+COMMENT ON COLUMN sensor_readings.pm2_5     IS 'Primary LSTM feature. WHO safe limit: 15 µg/m³ (24hr avg).';
+COMMENT ON COLUMN sensor_readings.aqi       IS 'Computed Air Quality Index (0–500). Shown on Home Screen dashboard.';
+COMMENT ON COLUMN sensor_readings.is_synced IS 'FALSE while device is offline; set TRUE after successful cloud upload.';
+
+
+-- =============================================================================
+-- 4. PREDICTIONS
+--    Stores LSTM model outputs. Each prediction is tied to the sensor reading
+--    that triggered it and forecasts air quality 25 minutes ahead.
+--    Binary output: 'safe' or 'warning' (from project spec section 1.3).
+-- =============================================================================
+
+CREATE TABLE predictions (
+    id                      UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id               UUID            NOT NULL
+                                REFERENCES devices(id) ON DELETE CASCADE,
+    sensor_reading_id       UUID            NOT NULL
+                                REFERENCES sensor_readings(id) ON DELETE CASCADE,
+
+    -- LSTM output
+    predicted_status        VARCHAR(20)     NOT NULL
+                                CHECK (predicted_status IN ('safe', 'warning', 'hazardous')),
+    confidence_score        NUMERIC(5, 4)   NOT NULL                -- 0.0000 – 1.0000
+                                CHECK (confidence_score BETWEEN 0 AND 1),
+
+    -- Prediction horizon (fixed at 25 minutes per project spec)
+    prediction_window_min   SMALLINT        NOT NULL DEFAULT 25,
+
+    predicted_at            TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+    -- Cloud synchronisation
+    is_synced               BOOLEAN         NOT NULL DEFAULT FALSE,
+    synced_at               TIMESTAMPTZ,
+
+    created_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  predictions                       IS 'LSTM model predictions (25-min forward window).';
+COMMENT ON COLUMN predictions.predicted_status      IS 'Binary output: safe or warning. Hazardous retained for future multi-class extension.';
+COMMENT ON COLUMN predictions.confidence_score      IS 'Model softmax probability for the predicted class (0.0 – 1.0).';
+COMMENT ON COLUMN predictions.prediction_window_min IS 'Forecast horizon in minutes. Fixed at 25 per project specification.';
+
+
+-- =============================================================================
+-- 5. ALERTS
+--    Generated when sensor thresholds are exceeded or LSTM predicts 'warning'.
+--    Logged locally first; synced to cloud when internet is available (FR-09, FR-10).
+-- =============================================================================
+
+CREATE TABLE alerts (
+    id                  UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id           UUID            NOT NULL
+                            REFERENCES devices(id) ON DELETE CASCADE,
+    sensor_reading_id   UUID            NOT NULL
+                            REFERENCES sensor_readings(id) ON DELETE CASCADE,
+    prediction_id       UUID                                        -- nullable: threshold alerts have no prediction
+                            REFERENCES predictions(id) ON DELETE SET NULL,
+
+    -- What triggered this alert
+    alert_type          VARCHAR(30)     NOT NULL
+                            CHECK (alert_type IN (
+                                'threshold_breach',     -- raw sensor value exceeded safe limit
+                                'prediction_warning'    -- LSTM predicted deterioration within 25 min
+                            )),
+    severity            VARCHAR(20)     NOT NULL
+                            CHECK (severity IN (
+                                'moderate',
+                                'unhealthy',
+                                'very_unhealthy',
+                                'hazardous'
+                            )),
+
+    -- Which parameter triggered the alert and what its value was
+    triggered_parameter VARCHAR(20)     NOT NULL
+                            CHECK (triggered_parameter IN (
+                                'temperature', 'humidity', 'co2',
+                                'pm1', 'pm2_5', 'pm10', 'aqi', 'prediction'
+                            )),
+    triggered_value     NUMERIC(7, 2),                              -- the raw sensor value at trigger time
+
+    message             TEXT,                                       -- human-readable alert description
+
+    -- User acknowledgement
+    is_acknowledged     BOOLEAN         NOT NULL DEFAULT FALSE,
+    acknowledged_at     TIMESTAMPTZ,
+
+    -- Cloud synchronisation (FR-15, FR-16, FR-17)
+    is_synced           BOOLEAN         NOT NULL DEFAULT FALSE,
+    synced_at           TIMESTAMPTZ,
+
+    created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  alerts                        IS 'Alert logs for threshold breaches and LSTM prediction warnings.';
+COMMENT ON COLUMN alerts.prediction_id          IS 'NULL for threshold_breach alerts; populated for prediction_warning alerts.';
+COMMENT ON COLUMN alerts.triggered_parameter    IS 'Which sensor reading (or model prediction) triggered this alert.';
+COMMENT ON COLUMN alerts.is_acknowledged        IS 'Set TRUE when user dismisses or acknowledges the alert in the mobile app.';
+
+
+-- =============================================================================
+-- INDEXES
+--    Targeted at the most common query patterns:
+--    – fetch all readings / predictions / alerts for a device (most frequent)
+--    – time-range queries for charts and 24-hour history
+--    – unsynced records batch queries for cloud sync job
+-- =============================================================================
+
+-- devices
+CREATE INDEX idx_devices_user_id
+    ON devices(user_id);
+
+-- users
+CREATE INDEX idx_users_email
+    ON users(email);
+
+-- sensor_readings
+CREATE INDEX idx_sensor_readings_device_id
+    ON sensor_readings(device_id);
+
+CREATE INDEX idx_sensor_readings_recorded_at
+    ON sensor_readings(recorded_at DESC);                           -- DESC optimises "latest N readings" queries
+
+CREATE INDEX idx_sensor_readings_device_time
+    ON sensor_readings(device_id, recorded_at DESC);               -- compound index for device-scoped time-series
+
+CREATE INDEX idx_sensor_readings_unsynced
+    ON sensor_readings(is_synced)
+    WHERE is_synced = FALSE;                                        -- partial index for cloud sync job
+
+-- predictions
+CREATE INDEX idx_predictions_device_id
+    ON predictions(device_id);
+
+CREATE INDEX idx_predictions_reading_id
+    ON predictions(sensor_reading_id);
+
+CREATE INDEX idx_predictions_unsynced
+    ON predictions(is_synced)
+    WHERE is_synced = FALSE;
+
+-- alerts
+CREATE INDEX idx_alerts_device_id
+    ON alerts(device_id);
+
+CREATE INDEX idx_alerts_created_at
+    ON alerts(created_at DESC);
+
+CREATE INDEX idx_alerts_unacknowledged
+    ON alerts(is_acknowledged)
+    WHERE is_acknowledged = FALSE;
+
+CREATE INDEX idx_alerts_unsynced
+    ON alerts(is_synced)
+    WHERE is_synced = FALSE;
+
+
+-- =============================================================================
+-- AUTO-UPDATE updated_at TRIGGER
+--    Keeps updated_at accurate on users and devices without manual effort.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION fn_update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION fn_update_updated_at();
+
+CREATE TRIGGER trg_devices_updated_at
+    BEFORE UPDATE ON devices
+    FOR EACH ROW EXECUTE FUNCTION fn_update_updated_at();
+
+
+-- =============================================================================
+-- SAMPLE / SEED DATA  (remove before production deployment)
+-- =============================================================================
+
+-- Admin user
+INSERT INTO users (username, email, password_hash, role)
+VALUES (
+    'admin',
+    'admin@breathesafe.lk',
+    '$2b$12$placeholder_bcrypt_hash_here',     -- replace with real bcrypt hash
+    'admin'
+);
+
+-- Regular user (matches the Profile screen mockup: John Alex)
+INSERT INTO users (username, email, password_hash)
+VALUES (
+    'john_alex',
+    'alex.cima@gmail.com',
+    '$2b$12$placeholder_bcrypt_hash_here'
+);
+
+-- Device for john_alex (matches Device screen mockup)
+INSERT INTO devices (user_id, device_name, serial_number, location_label)
+VALUES (
+    (SELECT id FROM users WHERE username = 'john_alex'),
+    'Living Room Sensor',
+    'ADF546554DFD54',
+    'Living Room'
+);
+
+-- Sample sensor reading (matches Home Screen mockup values: AQI 78, Temp 29, Humidity 65%, CO2 120)
+INSERT INTO sensor_readings
+    (device_id, temperature, humidity, co2, pm1, pm2_5, pm10, aqi, aqi_category)
+VALUES (
+    (SELECT id FROM devices WHERE serial_number = 'ADF546554DFD54'),
+    29.0,       -- °C     (DHT22)
+    65.0,       -- %RH    (DHT22)
+    120.0,      -- ppm    (MH-Z19C)  – well within safe range
+    55.0,       -- µg/m³  PM1.0  (PMS7003)
+    65.0,       -- µg/m³  PM2.5  (PMS7003)
+    65.0,       -- µg/m³  PM10   (PMS7003)
+    78,         -- AQI    (computed)
+    'Moderate'  -- matches "Normal" badge on Home Screen
+);
+
+-- Sample LSTM prediction for the reading above
+INSERT INTO predictions
+    (device_id, sensor_reading_id, predicted_status, confidence_score)
+VALUES (
+    (SELECT id FROM devices WHERE serial_number = 'ADF546554DFD54'),
+    (SELECT id FROM sensor_readings
+        WHERE device_id = (SELECT id FROM devices WHERE serial_number = 'ADF546554DFD54')
+        ORDER BY recorded_at DESC LIMIT 1),
+    'safe',
+    0.8912
+);
+
+
+-- =============================================================================
+-- SCHEMA RELATIONSHIP SUMMARY
+-- =============================================================================
+--
+--   users
+--    └─ id ◄──────────────────── devices.user_id
+--                                  └─ id ◄──── sensor_readings.device_id
+--                                  │             └─ id ◄── predictions.sensor_reading_id
+--                                  │             └─ id ◄── alerts.sensor_reading_id
+--                                  └─ id ◄──── predictions.device_id
+--                                  └─ id ◄──── alerts.device_id
+--                                               └── alerts.prediction_id ──► predictions.id
+--
+-- =============================================================================
